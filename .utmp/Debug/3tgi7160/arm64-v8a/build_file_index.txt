@@ -1,0 +1,2 @@
+D:\26.07_SUN_UnityProject\My_Unity_Concert_Project_XR\Library\Bee\Android\Prj\IL2CPP\Gradle\unityLibrary\src\main\cpp\CMakeLists.txt
+D:\26.07_SUN_UnityProject\My_Unity_Concert_Project_XR\Library\Bee\Android\Prj\IL2CPP\Gradle\unityLibrary\src\main\cpp\GameActivity\CMakeLists.txt

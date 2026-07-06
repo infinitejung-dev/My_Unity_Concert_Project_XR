@@ -38,3 +38,9 @@
 - `StageObject_Halo`가 네트워크 상에서 하나의 권위 오브젝트로 식별된다.
 - Host만 생성/소유/갱신하고 클라이언트는 수신만 하는 구조가 정리된다.
 - 다음 Task에서 위치/회전/크기 동기화를 구현할 준비가 된다.
+
+## 구현 기록
+- 2026-07-06: 1차 프로토타입은 런타임 Spawn 대신 Scene Object 방식으로 고정했다.
+- 2026-07-06: `StageObject_Halo`를 `SUN_SV_NetworkObjects` 하위에 두고, Fusion `NetworkObject`와 `SUN_SV_StageObjectHaloAuthority`를 붙였다.
+- 2026-07-06: `SUN_SV_StageObjectHaloAuthority`에서 Host/StateAuthority만 이후 Transform 작성 로직을 실행할 수 있도록 `CanAuthorStageTransform()` 기준을 제공한다.
+- 2026-07-06: 클라이언트는 `SUN_ARObjectPresenter` 같은 Host 전용 작성 컴포넌트를 끄고, 다음 Transform 동기화 단계에서 네트워크 값을 수신하는 구조로 진행한다.

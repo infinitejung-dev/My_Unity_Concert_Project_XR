@@ -12,7 +12,7 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: ebd0556be8c064a47b2b6401faac0c80, type: 3}
   m_Name: SUN_AudienceProfile_B
   m_EditorClassIdentifier: Assembly-CSharp::SUN_AudienceProfile
-  _audienceId: Audience_A
+  _audienceId: Audience_B
   _seatStagePositionMeters: {x: 2, y: 0, z: -5}
   _eyeHeightMeters: 1.55
   _deviceOffsetMeters: {x: 0.02, y: 0, z: 0.02}

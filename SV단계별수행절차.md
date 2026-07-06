@@ -107,6 +107,9 @@
 2. Hierarchy에 `AR Session`과 `XR Origin` 또는 `AR Session Origin`을 만든다.
 3. `XR Origin` 하위의 Main Camera를 모바일 AR 카메라로 사용한다.
 4. 모바일 카메라 배경이 보이도록 AR Camera Background 관련 설정을 확인한다.
+   - Android 빌드에서 `OPENGL NATIVE PLUG-IN ERROR: GL_INVALID_ENUM`이 발생하면 OpenGLES3 카메라 텍스처 경로 문제로 보고, 우선 `Vulkan -> OpenGLES3` 그래픽 API 순서와 `ARCommandBufferSupportRendererFeature` 적용 여부를 확인한다.
+   - ARCore Required + Vulkan 우선 조합에서는 Android Minimum API Level 29 이상을 사용하고, Android Multithreaded Rendering은 끈 상태로 실기 카메라 피드를 재검증한다.
+   - `AR Session`은 앱 시작 즉시 켜지게 두지 말고, Android 카메라 권한 확인 후 활성화되도록 런타임 로그를 남긴다.
 5. 공연장 기준 좌표와 모바일 AR 월드 좌표를 잇는 기준점을 정한다.
 6. 가장 단순한 방식은 `SUN_SV_StageOrigin`과 AR Origin의 시작 정렬을 같은 기준점으로 잡는 것이다.
 7. 필요하면 기준 마커 또는 수동 보정 버튼을 둬서 공연장 원점과 모바일 원점을 맞춘다.

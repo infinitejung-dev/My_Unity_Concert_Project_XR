@@ -19,3 +19,7 @@
 
 ## 완료 판정
 - [ ] 최소 3대 클라이언트 접속 흐름이 반복 가능하다.
+## 2026-07-07 Client Audience Seat 인덱스 보강 메모
+- [x] Client 런타임에서 Fusion `LocalPlayer.PlayerId`를 기준으로 Audience_A, Audience_B, Audience_C... 역할을 1개만 선택하는 프로토타입 구조를 추가했다.
+- [x] Host/Director 슬롯을 감안해 활성 PlayerId 목록에서 가장 낮은 슬롯을 제외하고, 첫 번째 원격 Client가 Audience_A에 매핑되도록 보정했다.
+- [ ] Android/PC 혼합 실기 테스트에서 Client 1/2/3의 선택 로그와 실제 표시 시점이 A/B/C 순서로 분리되는지 확인해야 한다.

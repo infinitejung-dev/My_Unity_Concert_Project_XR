@@ -40,6 +40,7 @@ public static class SUN_SV_MobileARWorldObjectViewSceneConfigurator
     private const string LegacyARSessionOriginName = "AR Session Origin";
     private const string CameraOffsetName = "Camera Offset";
     private const string MainCameraName = "Main Camera";
+    private const string MobileRenderPipelineAssetPath = "Assets/Settings/Mobile_RPAsset.asset";
     private const string MobileRendererDataPath = "Assets/Settings/Mobile_Renderer.asset";
     private const string ARBackgroundRendererFeatureName = "SUN_SV_ARBackgroundRendererFeature";
     private const string ARCommandBufferSupportRendererFeatureName = "SUN_SV_ARCoreCommandBufferSupportRendererFeature";
@@ -90,6 +91,7 @@ public static class SUN_SV_MobileARWorldObjectViewSceneConfigurator
         ConfigureARSession(arSession);
         ConfigureXROrigin(xrOrigin, arCamera);
         ConfigureARCamera(arCamera);
+        ConfigureMobileRenderPipelineAsset();
         EnsureARBackgroundRendererFeature();
         ConfigureAndroidARCoreLoader();
         ConfigureAndroidARCoreBuildSettings();
@@ -296,14 +298,36 @@ public static class SUN_SV_MobileARWorldObjectViewSceneConfigurator
         arCamera.backgroundColor = new Color(0.0f, 0.0f, 0.0f, 0.0f);
         arCamera.nearClipPlane = 0.05f;
         arCamera.farClipPlane = 1000.0f;
+        arCamera.rect = new Rect(0.0f, 0.0f, 1.0f, 1.0f);
+        arCamera.targetTexture = null;
+        arCamera.allowHDR = false;
+        arCamera.allowMSAA = false;
+        arCamera.allowDynamicResolution = false;
+        arCamera.forceIntoRenderTexture = false;
         arCamera.enabled = false;
+
+        // Android AR camera validation uses a single fullscreen Base camera without post effects or stacked overlays.
+        UniversalAdditionalCameraData cameraData = GetOrAddComponent<UniversalAdditionalCameraData>(arCamera.gameObject);
+        cameraData.renderType = CameraRenderType.Base;
+        List<Camera> cameraStack = cameraData.cameraStack;
+        if (cameraStack != null)
+        {
+            cameraStack.Clear();
+        }
+
+        cameraData.renderPostProcessing = false;
+        cameraData.antialiasing = AntialiasingMode.None;
+        cameraData.allowHDROutput = false;
+        cameraData.requiresDepthTexture = false;
+        cameraData.requiresColorTexture = false;
+        cameraData.SetRenderer(0);
 
         ARCameraManager cameraManager = GetOrAddComponent<ARCameraManager>(arCamera.gameObject);
         cameraManager.autoFocusRequested = true;
-        cameraManager.imageStabilizationRequested = true;
+        cameraManager.imageStabilizationRequested = false;
         cameraManager.requestedFacingDirection = CameraFacingDirection.World;
         cameraManager.requestedLightEstimation = LightEstimation.None;
-        cameraManager.requestedBackgroundRenderingMode = CameraBackgroundRenderingMode.Any;
+        cameraManager.requestedBackgroundRenderingMode = CameraBackgroundRenderingMode.BeforeOpaques;
         cameraManager.enabled = false;
 
         ARCameraBackground cameraBackground = GetOrAddComponent<ARCameraBackground>(arCamera.gameObject);
@@ -333,6 +357,25 @@ public static class SUN_SV_MobileARWorldObjectViewSceneConfigurator
         trackedPoseDriver.trackingStateInput = new InputActionProperty(trackingStateAction);
     }
 
+    private static void ConfigureMobileRenderPipelineAsset()
+    {
+        UniversalRenderPipelineAsset pipelineAsset = AssetDatabase.LoadAssetAtPath<UniversalRenderPipelineAsset>(MobileRenderPipelineAssetPath);
+        if (pipelineAsset == null)
+        {
+            Debug.LogWarning($"{nameof(SUN_SV_MobileARWorldObjectViewSceneConfigurator)} could not find mobile render pipeline asset at {MobileRenderPipelineAssetPath}.");
+            return;
+        }
+
+        // The AR camera background should allocate at the phone surface size. Scaling, HDR, and camera textures add
+        // extra render targets that can hide or amplify portrait/landscape attachment mismatches on Android.
+        pipelineAsset.supportsHDR = false;
+        pipelineAsset.msaaSampleCount = 1;
+        pipelineAsset.renderScale = 1.0f;
+        pipelineAsset.supportsCameraDepthTexture = false;
+        pipelineAsset.supportsCameraOpaqueTexture = false;
+        EditorUtility.SetDirty(pipelineAsset);
+    }
+
     private static void EnsureARBackgroundRendererFeature()
     {
         // URP에서는 ARCameraBackground만으로는 부족하므로 모바일 렌더러에 AR 배경 패스를 함께 등록한다.
@@ -345,6 +388,8 @@ public static class SUN_SV_MobileARWorldObjectViewSceneConfigurator
 
         EnsureRendererFeature<ARBackgroundRendererFeature>(rendererData, ARBackgroundRendererFeatureName);
         EnsureRendererFeature<ARCommandBufferSupportRendererFeature>(rendererData, ARCommandBufferSupportRendererFeatureName);
+        rendererData.useNativeRenderPass = false;
+        EditorUtility.SetDirty(rendererData);
         AssetDatabase.SaveAssets();
     }
 
@@ -386,14 +431,21 @@ public static class SUN_SV_MobileARWorldObjectViewSceneConfigurator
 
     private static void ConfigureAndroidARCoreBuildSettings()
     {
-        // Prefer Vulkan first to avoid the OpenGLES camera texture path that produced GL_INVALID_ENUM on device.
+        // Use OpenGLES3 only because the current device log fails in ARCore's Vulkan hardware-buffer camera path.
         GraphicsDeviceType[] graphicsApis = PlayerSettings.GetGraphicsAPIs(BuildTarget.Android);
-        GraphicsDeviceType[] preferredGraphicsApis = { GraphicsDeviceType.Vulkan, GraphicsDeviceType.OpenGLES3 };
+        GraphicsDeviceType[] preferredGraphicsApis = { GraphicsDeviceType.OpenGLES3 };
         if (!GraphicsApisMatch(graphicsApis, preferredGraphicsApis))
         {
             PlayerSettings.SetUseDefaultGraphicsAPIs(BuildTarget.Android, false);
             PlayerSettings.SetGraphicsAPIs(BuildTarget.Android, preferredGraphicsApis);
         }
+
+        // Lock the handheld AR prototype to one landscape direction so ARCore camera textures and URP targets agree.
+        PlayerSettings.defaultInterfaceOrientation = UIOrientation.LandscapeLeft;
+        PlayerSettings.allowedAutorotateToPortrait = false;
+        PlayerSettings.allowedAutorotateToPortraitUpsideDown = false;
+        PlayerSettings.allowedAutorotateToLandscapeLeft = true;
+        PlayerSettings.allowedAutorotateToLandscapeRight = false;
 
         ARCoreSettings arCoreSettings = ARCoreSettings.GetOrCreateSettings();
         AndroidSdkVersions requiredMinSdkVersion = arCoreSettings.requirement == ARCoreSettings.Requirement.Required
@@ -505,10 +557,26 @@ public static class SUN_SV_MobileARWorldObjectViewSceneConfigurator
         serializedAlignment.FindProperty("_useArCameraAsLocalAudienceView").boolValue = true;
         serializedAlignment.FindProperty("_logAudienceRigSelection").boolValue = true;
         serializedAlignment.FindProperty("_requestAndroidCameraPermissionBeforeSessionStart").boolValue = true;
+        serializedAlignment.FindProperty("_initializeXrLoaderIfMissing").boolValue = true;
+        serializedAlignment.FindProperty("_checkArAvailabilityBeforeSessionStart").boolValue = true;
         serializedAlignment.FindProperty("_enableArSessionAfterPermission").boolValue = true;
         serializedAlignment.FindProperty("_alignXrOriginToStageOriginOnStart").boolValue = true;
         serializedAlignment.FindProperty("_logArCameraStartupState").boolValue = true;
         serializedAlignment.FindProperty("_startupStatusLogIntervalSeconds").floatValue = 2.0f;
+        serializedAlignment.FindProperty("_requireRenderableCameraFrameBeforeReady").boolValue = true;
+        serializedAlignment.FindProperty("_renderableFrameWarningDelaySeconds").floatValue = 12.0f;
+        serializedAlignment.FindProperty("_requestedBackgroundRenderingMode").enumValueIndex = (int)CameraBackgroundRenderingMode.BeforeOpaques;
+        serializedAlignment.FindProperty("_requestImageStabilization").boolValue = false;
+        serializedAlignment.FindProperty("_lockAndroidArScreenOrientation").boolValue = true;
+        serializedAlignment.FindProperty("_androidArScreenOrientation").intValue = (int)ScreenOrientation.LandscapeLeft;
+        serializedAlignment.FindProperty("_waitForStableScreenDimensionsBeforeCameraEnable").boolValue = true;
+        serializedAlignment.FindProperty("_stableScreenDimensionFrameCount").intValue = 3;
+        serializedAlignment.FindProperty("_stableScreenDimensionTimeoutSeconds").floatValue = 4.0f;
+        serializedAlignment.FindProperty("_arCameraEnableDelayFrames").intValue = 2;
+        serializedAlignment.FindProperty("_forceSimpleArCameraRenderingPath").boolValue = true;
+        serializedAlignment.FindProperty("_restartArCameraWhenBackgroundFrameMissing").boolValue = true;
+        serializedAlignment.FindProperty("_maxArCameraStartupRestartAttempts").intValue = 2;
+        serializedAlignment.FindProperty("_arCameraRestartCooldownSeconds").floatValue = 0.5f;
         serializedAlignment.FindProperty("_logAlignmentOnStart").boolValue = true;
 
         serializedAlignment.ApplyModifiedPropertiesWithoutUndo();

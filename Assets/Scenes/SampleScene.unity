@@ -1348,7 +1348,7 @@ MonoBehaviour:
   _stableScreenDimensionTimeoutSeconds: 4
   _arCameraEnableDelayFrames: 2
   _forceSimpleArCameraRenderingPath: 1
-  _restartArCameraWhenBackgroundFrameMissing: 1
+  _restartArCameraWhenBackgroundFrameMissing: 0
   _maxArCameraStartupRestartAttempts: 2
   _arCameraRestartCooldownSeconds: 0.5
   _logAlignmentOnStart: 1

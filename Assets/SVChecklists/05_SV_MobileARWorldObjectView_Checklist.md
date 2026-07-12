@@ -2,7 +2,7 @@
 
 ## 구현 확인
 - [ ] 스마트폰 카메라 기반 AR 뷰가 동작한다.  
-  - 진행 상태: 씬의 AR Camera 구성은 존재했으나 Android XR Management의 Loader 목록이 비어 있어 AR Foundation이 기기 카메라/포즈 서브시스템을 시작하지 못하는 상태였다. `Assets/XR/XRGeneralSettingsPerBuildTarget.asset`의 Android Providers에 `ARCoreLoader`를 등록했고, 구성 메뉴에서도 ARCore Loader를 첫 번째 Android XR Loader로 보정하도록 수정했다. Android 재빌드 후 실기 카메라 피드 확인이 필요하다.
+  - 진행 상태: ARCore Loader/URP 배경 구성에 더해, 네이티브 ARCore camera가 준비되기 전에 `ARCameraManager`가 켜지는 우회 경로를 제거했다. 카메라 프레임 timeout은 `ARCameraManager` 활성화 시점부터 계산하며, Android 재빌드 후 실기 카메라 피드 확인이 필요하다.
 - [x] Android 빌드 타깃에 ARCore Loader가 등록되어 있다.
   - 진행 상태: Android Providers에 `Assets/XR/Loaders/ARCoreLoader.asset`을 연결하고 자동 Loading/Running을 켰다.
 - [x] Android ARCore 빌드 검증에 맞는 그래픽 API 우선순위가 적용되어 있다.
@@ -106,3 +106,23 @@
 - [x] 씬의 `_maxArCameraStartupRestartAttempts`를 코드/Configurator 기본값과 같은 2회로 맞춰 빌드에 저장된 값이 1회로 남아 있던 문제를 수정했다.
 - [x] `camera_c_api.cc:114 camera was passed NULL` 반복 원인은 `ARSession.state == Ready`를 카메라 활성화 가능 상태로 취급해 `ARCameraManager`가 ARCore native camera frame 생성 전 `TryGetLatestFrame`/texture descriptor 경로를 호출한 것으로 판단했다. `XRSessionSubsystem.running == true`이고 `ARSession.state`가 `SessionInitializing` 또는 `SessionTracking`에 들어온 뒤에만 `ARCameraManager`/`ARCameraBackground`를 켜도록 guard를 보강했다.
 - [ ] Android 재빌드 후 Logcat에서 `orientationLock=True:LandscapeLeft`, `screen=<가로>x<세로>@LandscapeLeft`, `graphics=OpenGLES3`, `received first renderable AR camera background frame` 순서가 찍히고 검정 배경 대신 실제 카메라 feed가 보이는지 재검증해야 한다.
+
+## 2026-07-12 AR 카메라 시작 복구 흐름 수정 메모
+- [x] 화면 방향/AR Session 준비 대기 시간이 12초 카메라 프레임 timeout에 포함되어, 실제 `ARCameraManager` 활성화 직후 재시작될 수 있던 타이머 기준을 수정했다. 이제 실제 카메라 텍스처 요청이 가능한 시점부터 timeout을 계산한다.
+- [x] 당시에는 AR Session 준비 timeout 뒤에도 `ARCameraManager`와 `ARCameraBackground` 초기화를 계속하도록 했으나, NULL camera 호출을 허용하는 흐름으로 확인되어 2026-07-13 수정에서 이 우회 처리를 폐기했다.
+- [x] 권한/세션 준비 중에는 AR Manager만 비활성화하고 XR `Main Camera` 자체는 Android 로컬 뷰 렌더 경로에 유지하도록 수정했다.
+- [x] 상세 시작 로그를 끈 빌드에서도 카메라 프레임 timeout 및 자동 복구가 동작하도록 진단 로그와 복구 조건을 분리했다.
+- [x] 자동 재시작 cooldown을 `WaitForSecondsRealtime`로 변경해 타임 스케일과 무관하게 복구가 진행되도록 수정했다.
+- [ ] Android 실기에서 권한 승인 뒤 12초의 실제 카메라 활성 구간 안에 `received first renderable AR camera background frame` 로그가 출력되고 검정 배경이 카메라 feed로 교체되는지 확인해야 한다.
+
+## 2026-07-13 ARCore NULL camera 호출 제거 메모
+- [x] AR Foundation 6.4.3의 `ARCameraManager.Update()`가 활성화된 동안 매 프레임 `XRCameraSubsystem.TryGetLatestFrame()`을 호출하는 생명주기를 기준으로 시작 순서를 재검토했다.
+- [x] `ARSession.state`가 `SessionInitializing` 또는 `SessionTracking`에 도달하지 못했는데도 timeout 뒤 `ARCameraManager`/`ARCameraBackground`를 강제로 켜던 2026-07-12 우회 처리를 제거했다.
+- [x] 세션 준비 timeout 시 AR 카메라 manager는 계속 끈 상태로 유지하고, 네이티브 상태가 불완전한 동안 자동 `Stop/Reset/Start`를 반복하지 않도록 이번 검증의 자동 재시작 기본값과 씬 설정을 껐다.
+- [x] `ARCameraBackground` 구독 후 `ARCameraManager`를 켜는 정상 순서는 유지하고, 실제 manager 활성화 뒤부터만 렌더 가능 프레임 timeout을 계산하도록 유지했다.
+- [x] 첫 렌더 가능 프레임 전 진단 로그가 `currentFacingDirection`, `currentRenderingMode`, `imageStabilizationEnabled`, background material 등 카메라 provider 상태 getter를 읽지 않도록 지연했다.
+- [x] `descriptor.supportsImageStabilization`도 ARCore native 지원 여부 delegate를 호출하므로 같은 첫 프레임 gate 뒤로 이동했다.
+- [x] manager 활성 직후 runtime request를 다시 쓰는 호출을 제거했다. 요청값은 manager가 꺼져 있을 때 저장하고 `ARCameraManager.OnBeforeStart()`가 적용하며, Image Stabilization 지원 조회/후속 요청만 첫 실제 프레임 뒤 수행한다.
+- [x] readiness는 manager/background를 끈 상태와 동일 AR Session을 유지하면서 10초 단위 최대 3회 확인한다. 30초 뒤에도 준비되지 않을 때만 manager를 켜지 않은 채 명시적으로 종료한다.
+- [ ] Android 재빌드 후 Logcat에서 `camera_c_api.cc:114] operator(): camera was passed NULL.`이 더 이상 발생하지 않는지 확인해야 한다.
+- [ ] 이어서 `AR Session state changed to SessionInitializing` 또는 `SessionTracking` 이후 `received first renderable AR camera background frame` 로그와 실제 카메라 feed를 확인해야 한다.

@@ -19,6 +19,9 @@ using UnityEngine.Android;
 /// </summary>
 public class SUN_SV_MobileARStageAlignment : MonoBehaviour
 {
+    private const float ArSessionReadyPollWindowSeconds = 10.0f;
+    private const int ArSessionReadyPollWindowCount = 3;
+
     [Tooltip("XR Origin that receives the mobile device pose in Unity World space.")]
     [SerializeField] private XROrigin _xrOrigin;
 
@@ -122,8 +125,8 @@ public class SUN_SV_MobileARStageAlignment : MonoBehaviour
     [Tooltip("Force the AR camera onto a fullscreen Base camera path without HDR, MSAA, post processing, or camera stacking.")]
     [SerializeField] private bool _forceSimpleArCameraRenderingPath = true;
 
-    [Tooltip("Restart AR Session and camera components if the camera background stays non-renderable.")]
-    [SerializeField] private bool _restartArCameraWhenBackgroundFrameMissing = true;
+    [Tooltip("Restart AR Session and camera components if the camera background stays non-renderable. Keep disabled while diagnosing native ARCore camera startup.")]
+    [SerializeField] private bool _restartArCameraWhenBackgroundFrameMissing;
 
     [Tooltip("Maximum number of automatic AR camera restarts during startup.")]
     [SerializeField] private int _maxArCameraStartupRestartAttempts = 2;
@@ -228,19 +231,18 @@ public class SUN_SV_MobileARStageAlignment : MonoBehaviour
     {
         UpdateAudienceSeatFromRunningPlayer();
 
-        if (!ShouldUseArCameraAsLocalAudienceView() || !_logArCameraStartupState || _hasReceivedCameraFrame)
+        if (!ShouldUseArCameraAsLocalAudienceView() || _hasReceivedCameraFrame)
         {
             return;
         }
 
-        if (Time.unscaledTime < _nextStatusLogTime)
+        if (_logArCameraStartupState && Time.unscaledTime >= _nextStatusLogTime)
         {
-            return;
+            _nextStatusLogTime = Time.unscaledTime + Mathf.Max(0.5f, _startupStatusLogIntervalSeconds);
+            LogArCameraStatus("waiting for first AR camera frame");
         }
 
-        _nextStatusLogTime = Time.unscaledTime + Mathf.Max(0.5f, _startupStatusLogIntervalSeconds);
-        LogArCameraStatus("waiting for first AR camera frame");
-
+        // Recovery must remain active even when verbose startup logging is disabled in a release build.
         if (!_hasLoggedRenderableFrameTimeout
             && _arStartupBeganTime > 0.0f
             && Time.unscaledTime - _arStartupBeganTime >= Mathf.Max(1.0f, _renderableFrameWarningDelaySeconds))
@@ -362,8 +364,8 @@ public class SUN_SV_MobileARStageAlignment : MonoBehaviour
 
         if (!_enableArSessionAfterPermission)
         {
-            SetArCameraComponentsEnabled(true);
             ReapplyArCameraRuntimeRequests();
+            SetArCameraComponentsEnabled(true);
             LogArCameraStatus("AR Session startup guard is disabled");
             return;
         }
@@ -445,7 +447,7 @@ public class SUN_SV_MobileARStageAlignment : MonoBehaviour
         _hasLoggedInvalidCameraFrame = false;
         _hasLoggedRenderableFrameTimeout = false;
         _invalidCameraFrameCount = 0;
-        _arStartupBeganTime = Time.unscaledTime;
+        _arStartupBeganTime = -1.0f;
 
         // Let Android finish swapping the app surface to the requested landscape frame before ARCore opens the camera path.
         yield return WaitForStableScreenDimensionsBeforeCameraEnable("before AR Session enable");
@@ -456,8 +458,10 @@ public class SUN_SV_MobileARStageAlignment : MonoBehaviour
 
         if (!IsArSessionReadyForCameraEnable())
         {
-            Debug.LogError($"{nameof(SUN_SV_MobileARStageAlignment)} will keep AR camera components disabled because AR Session did not enter a running update state. ARSession.state={ARSession.state}. This prevents ARCore camera frame requests while the native camera is still null.", this);
-            LogArCameraStatus("blocked AR camera component enable because AR Session is not running yet");
+            // ARCameraManager.Update immediately calls TryGetLatestFrame. Never enable it while ARCore still reports
+            // Ready, because the native session exists but its camera handle has not been created yet.
+            Debug.LogError($"{nameof(SUN_SV_MobileARStageAlignment)} will keep AR camera managers disabled because the native session did not reach an updating state. ARSession.state={ARSession.state}. Relaunch the Android client after checking the preceding ARCore availability and session logs.", this);
+            LogArCameraStatus("AR Session readiness wait timed out before AR camera manager enable");
             _startupRoutine = null;
             yield break;
         }
@@ -466,7 +470,9 @@ public class SUN_SV_MobileARStageAlignment : MonoBehaviour
         yield return DelayArCameraComponentEnable();
 
         SetArCameraComponentsEnabled(true);
-        ReapplyArCameraRuntimeRequests();
+        // Measure the frame timeout from the point at which ARCameraManager can actually emit camera textures.
+        // Earlier orientation/session waits must not consume the camera's cold-start recovery budget.
+        _arStartupBeganTime = Time.unscaledTime;
         LogArCameraStatus("enabled AR Session and AR camera background after camera permission check");
 
         _startupRoutine = null;
@@ -553,12 +559,14 @@ public class SUN_SV_MobileARStageAlignment : MonoBehaviour
 
         if (_arCamera != null)
         {
-            _arCamera.enabled = shouldEnableArSubsystems;
+            // Keep the XR camera rendering stage objects while permission/session startup is in progress.
+            // Only the AR managers are gated; disabling the Camera itself can leave the player with no recoverable view.
+            _arCamera.enabled = shouldUseArCameraView;
         }
 
         if (_arAudioListener != null)
         {
-            _arAudioListener.enabled = shouldEnableArSubsystems;
+            _arAudioListener.enabled = shouldUseArCameraView;
         }
 
         if (!shouldEnableArSubsystems)
@@ -607,7 +615,10 @@ public class SUN_SV_MobileARStageAlignment : MonoBehaviour
 
     private bool ShouldRequestImageStabilization()
     {
-        if (!_requestImageStabilization || _arCameraManager == null || _arCameraManager.descriptor == null)
+        if (!_requestImageStabilization
+            || !_hasReceivedCameraFrame
+            || _arCameraManager == null
+            || _arCameraManager.descriptor == null)
         {
             return false;
         }
@@ -681,16 +692,23 @@ public class SUN_SV_MobileARStageAlignment : MonoBehaviour
 
     private IEnumerator WaitForArSessionReadyForCameraEnable()
     {
-        float timeoutAt = Time.unscaledTime + 2.0f;
-        while (!IsArSessionReadyForCameraEnable() && Time.unscaledTime < timeoutAt)
+        // Keep managers disabled while a slow ARCore session finishes asynchronously. Poll in bounded windows
+        // without Stop/Reset/Start so this wait cannot create another native camera lifecycle race.
+        for (int pollWindowIndex = 0; pollWindowIndex < ArSessionReadyPollWindowCount; pollWindowIndex++)
         {
-            ApplyArCameraRenderingSafetySettings();
-            yield return null;
-        }
+            float timeoutAt = Time.unscaledTime + ArSessionReadyPollWindowSeconds;
+            while (!IsArSessionReadyForCameraEnable() && Time.unscaledTime < timeoutAt)
+            {
+                ApplyArCameraRenderingSafetySettings();
+                yield return null;
+            }
 
-        if (!IsArSessionReadyForCameraEnable())
-        {
-            LogArCameraStatus("continued AR camera startup after AR Session readiness wait timed out");
+            if (IsArSessionReadyForCameraEnable())
+            {
+                yield break;
+            }
+
+            LogArCameraStatus($"AR Session readiness poll window {pollWindowIndex + 1}/{ArSessionReadyPollWindowCount} elapsed before camera enable");
         }
     }
 
@@ -802,7 +820,7 @@ public class SUN_SV_MobileARStageAlignment : MonoBehaviour
             _arSession.Reset();
         }
 
-        yield return new WaitForSeconds(Mathf.Max(0.1f, _arCameraRestartCooldownSeconds));
+        yield return new WaitForSecondsRealtime(Mathf.Max(0.1f, _arCameraRestartCooldownSeconds));
 
         _hasReceivedCameraFrame = false;
         _hasLoggedInvalidCameraFrame = false;
@@ -1108,6 +1126,12 @@ public class SUN_SV_MobileARStageAlignment : MonoBehaviour
 
         _hasReceivedCameraFrame = true;
         _arCameraStartupRestartAttemptCount = 0;
+        if (_requestImageStabilization)
+        {
+            // Provider capability getters and follow-up requests are safe only after ARCore emitted a real frame.
+            ReapplyArCameraRuntimeRequests();
+        }
+
         LogArCameraStatus($"received first renderable AR camera background frame; textures={textureCount}, invalidFramesBeforeReady={_invalidCameraFrameCount}");
     }
 
@@ -1118,26 +1142,33 @@ public class SUN_SV_MobileARStageAlignment : MonoBehaviour
             return;
         }
 
+        bool canReadCameraProviderState = _hasReceivedCameraFrame
+            && _arCameraManager != null
+            && _arCameraManager.enabled
+            && _arCameraManager.subsystem != null
+            && _arCameraManager.subsystem.running;
         string permissionStatus = HasAndroidCameraPermission() ? "granted" : "missing";
-        string subsystemPermission = _arCameraManager != null ? _arCameraManager.permissionGranted.ToString() : "missing-manager";
+        string subsystemPermission = canReadCameraProviderState ? _arCameraManager.permissionGranted.ToString() : "deferred-until-frame";
         string sessionEnabled = _arSession != null ? _arSession.enabled.ToString() : "missing-session";
         string cameraManagerEnabled = _arCameraManager != null ? _arCameraManager.enabled.ToString() : "missing-manager";
         string backgroundEnabled = _arCameraBackground != null ? _arCameraBackground.enabled.ToString() : "missing-background";
         string backgroundRenderingEnabled = _arCameraBackground != null ? _arCameraBackground.backgroundRenderingEnabled.ToString() : "missing-background";
-        string backgroundMaterial = _arCameraBackground != null ? (_arCameraBackground.material != null ? _arCameraBackground.material.name : "missing-material") : "missing-background";
+        string backgroundMaterial = canReadCameraProviderState && _arCameraBackground != null
+            ? (_arCameraBackground.material != null ? _arCameraBackground.material.name : "missing-material")
+            : "deferred-until-frame";
         string cameraEnabled = _arCamera != null ? _arCamera.enabled.ToString() : "missing-camera";
         string cameraClearFlags = _arCamera != null ? _arCamera.clearFlags.ToString() : "missing-camera";
-        string renderMode = _arCameraManager != null ? _arCameraManager.currentRenderingMode.ToString() : "unknown";
-        string requestedRenderMode = _arCameraManager != null ? _arCameraManager.requestedBackgroundRenderingMode.ToString() : "unknown";
-        string supportedRenderMode = _arCameraManager != null && _arCameraManager.subsystem != null
+        string renderMode = canReadCameraProviderState ? _arCameraManager.currentRenderingMode.ToString() : "deferred-until-frame";
+        string requestedRenderMode = canReadCameraProviderState ? _arCameraManager.requestedBackgroundRenderingMode.ToString() : _requestedBackgroundRenderingMode.ToString();
+        string supportedRenderMode = canReadCameraProviderState
             ? _arCameraManager.subsystem.supportedCameraBackgroundRenderingMode.ToString()
-            : "missing-subsystem";
-        string facingDirection = _arCameraManager != null ? _arCameraManager.currentFacingDirection.ToString() : "unknown";
-        string imageStabilizationRequested = _arCameraManager != null ? _arCameraManager.imageStabilizationRequested.ToString() : "missing-manager";
-        string imageStabilizationEnabled = _arCameraManager != null ? _arCameraManager.imageStabilizationEnabled.ToString() : "missing-manager";
-        string imageStabilizationSupport = _arCameraManager != null && _arCameraManager.descriptor != null
+            : "deferred-until-frame";
+        string facingDirection = canReadCameraProviderState ? _arCameraManager.currentFacingDirection.ToString() : "deferred-until-frame";
+        string imageStabilizationRequested = canReadCameraProviderState ? _arCameraManager.imageStabilizationRequested.ToString() : _requestImageStabilization.ToString();
+        string imageStabilizationEnabled = canReadCameraProviderState ? _arCameraManager.imageStabilizationEnabled.ToString() : "deferred-until-frame";
+        string imageStabilizationSupport = canReadCameraProviderState && _arCameraManager.descriptor != null
             ? _arCameraManager.descriptor.supportsImageStabilization.ToString()
-            : "missing-descriptor";
+            : "deferred-until-frame";
         string screenSummary = $"{Screen.width}x{Screen.height}@{Screen.orientation}";
         string arCameraRenderSettings = BuildArCameraRenderSettingsSummary();
         string trackingReason = ARSession.notTrackingReason.ToString();

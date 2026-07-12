@@ -431,6 +431,10 @@ public static class SUN_SV_MobileARWorldObjectViewSceneConfigurator
 
     private static void ConfigureAndroidARCoreBuildSettings()
     {
+        // 휴대폰 ARCore 프로토타입은 Android XR/OpenXR용 GameActivity가 아니라 표준 Activity 생명주기를 사용한다.
+        // 실기기에서 GameActivity 사용 시 ARCore 센서 큐 등록 실패 후 camera NULL 상태가 반복될 수 있다.
+        PlayerSettings.Android.applicationEntry = AndroidApplicationEntry.Activity;
+
         // Use OpenGLES3 only because the current device log fails in ARCore's Vulkan hardware-buffer camera path.
         GraphicsDeviceType[] graphicsApis = PlayerSettings.GetGraphicsAPIs(BuildTarget.Android);
         GraphicsDeviceType[] preferredGraphicsApis = { GraphicsDeviceType.OpenGLES3 };
@@ -574,7 +578,7 @@ public static class SUN_SV_MobileARWorldObjectViewSceneConfigurator
         serializedAlignment.FindProperty("_stableScreenDimensionTimeoutSeconds").floatValue = 4.0f;
         serializedAlignment.FindProperty("_arCameraEnableDelayFrames").intValue = 2;
         serializedAlignment.FindProperty("_forceSimpleArCameraRenderingPath").boolValue = true;
-        serializedAlignment.FindProperty("_restartArCameraWhenBackgroundFrameMissing").boolValue = true;
+        serializedAlignment.FindProperty("_restartArCameraWhenBackgroundFrameMissing").boolValue = false;
         serializedAlignment.FindProperty("_maxArCameraStartupRestartAttempts").intValue = 2;
         serializedAlignment.FindProperty("_arCameraRestartCooldownSeconds").floatValue = 0.5f;
         serializedAlignment.FindProperty("_logAlignmentOnStart").boolValue = true;
